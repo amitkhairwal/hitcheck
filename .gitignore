@@ -1,0 +1,10 @@
+/hitcheck
+/dist/
+*.out
+*.test
+
+# local config and exported reports
+config.yaml
+*.csv
+*.json
+!config.example.yaml

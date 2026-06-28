@@ -1,0 +1,26 @@
+# Copy this to config.yaml and point it at your own endpoints.
+
+# Per-request timeout. Anything slower is counted as a failure.
+timeout: 5s
+
+# How often `hitcheck watch` re-runs the checks.
+interval: 10s
+
+endpoints:
+  - name: github
+    url: https://api.github.com
+    expect_status: 200
+
+  - name: httpbin-get
+    url: https://httpbin.org/get
+
+  - name: httpbin-headers
+    url: https://httpbin.org/headers
+    method: GET
+    headers:
+      Accept: application/json
+
+  # expect_status lets you assert a non-200 response on purpose
+  - name: not-found
+    url: https://httpbin.org/status/404
+    expect_status: 404
