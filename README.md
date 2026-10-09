@@ -1,149 +1,109 @@
 # hitcheck
 
-A small command line tool for checking whether a bunch of HTTP endpoints are
-up, and for throwing load at one of them to see how it holds up. Written in Go,
-no runtime dependencies, single binary.
+A small Go command line tool that does two things: checks whether a list of HTTP endpoints is up, and fires a burst of requests at one URL to see how it holds up.
 
-I built it because I kept writing throwaway `curl` loops to sanity check
-services during development and wanted something that printed a clean table and
-could also act as a quick load generator.
+I wrote it because I kept typing throwaway `curl` loops while testing services, and I wanted one command that printed a clean table and could also act as a quick load generator. It builds to a single binary. The only dependency is `yaml.v3`, for the config file.
 
-## Install
+## Build
 
 ```
 go build -o hitcheck .
 ```
 
-Or run it without building:
+## Commands
 
-```
-go run . check https://example.com
-```
-
-## Usage
-
-There are three subcommands: `check`, `watch` and `load`.
+`check`, `watch` and `load`. Run `hitcheck <command> -h` for the flags.
 
 ### check
 
-Run a one-off health check. Pass URLs directly:
+Run the checks once. Pass URLs directly or point it at a YAML file.
 
 ```
-hitcheck check https://api.github.com https://httpbin.org/get
-```
-
-or load a list of endpoints from YAML:
-
-```
+hitcheck check https://example.com https://api.github.com
 hitcheck check -config config.yaml
 ```
 
-Output:
+Output from a run against a local server (one endpoint expects a 404, one port has nothing listening):
 
 ```
-ENDPOINT          STATUS  CODE  LATENCY   NOTE
-github            UP      200   142.3ms   ok
-httpbin-get       UP      200   311.0ms   ok
-not-found         UP      404   208.7ms   ok
-broken            DOWN    -     5001.2ms  timeout
+ENDPOINT    STATUS  CODE  LATENCY  NOTE
+home        UP      200   32.3ms   ok
+missing     UP      404   32.7ms   ok
+wrong-port  DOWN    -     3.7ms    connection refused
 
-3/4 healthy
+2/3 healthy
 ```
 
-The process exits with code `1` if any endpoint is down, so it drops straight
-into a cron job or a CI step.
-
-Export the results with `-json` or `-csv`:
-
-```
-hitcheck check -config config.yaml -csv report.csv
-```
-
-Flags have to come before any bare URLs, e.g.
-`hitcheck check -csv report.csv https://example.com` (this is how Go's flag
-parser works).
+Endpoints are checked in parallel, so the run takes about as long as the slowest one. The exit code is `1` if anything is down, so it works in cron or a CI step. Add `-json file` or `-csv file` to save the results. Flags go before bare URLs, which is how Go's `flag` package works.
 
 ### watch
 
-Same checks as above, but re-run on an interval and redraw the table in place.
-Good for leaving open on a second monitor.
+Same checks, repeated on an interval, with the table redrawn in place.
 
 ```
 hitcheck watch -config config.yaml -interval 5s
 ```
 
-Ctrl-C to stop.
-
 ### load
 
-Fire a fixed number of requests at a single URL through a pool of workers and
-report latency percentiles.
+Send a fixed number of requests to one URL through a pool of workers, then print latency percentiles.
 
 ```
-hitcheck load -url https://httpbin.org/get -n 1000 -c 50
+hitcheck load -url http://localhost:8099/ -n 500 -c 10
 ```
 
 ```
-Target       https://httpbin.org/get
-Requests     1000 (50 concurrent)
-Duration     6.214s
-Throughput   161 req/s
-Success      1000 (100.0%)
+running 500 requests at concurrency 10...
+
+Target       http://localhost:8099/
+Requests     500 (10 concurrent)
+Duration     1.022s
+Throughput   489 req/s
+Success      500 (100.0%)
 Failed       0
 
 Latency
-  min    98.0ms
-  mean   305.1ms
-  p50    291.4ms
-  p90    402.7ms
-  p95    448.9ms
-  p99    693.2ms
-  max    1004.6ms
+  min   1.8ms
+  mean  9.5ms
+  p50   2.9ms
+  p90   4.7ms
+  p95   6.4ms
+  p99   18.2ms
+  max   1020.9ms
 
 Status codes
-  200    1000
+  200    500
 ```
 
-Flags:
-
-| flag        | meaning                              | default |
-|-------------|--------------------------------------|---------|
-| `-url`      | target URL (required)                |         |
-| `-n`        | total requests to send               | 200     |
-| `-c`        | concurrent workers (max 1000)        | 20      |
-| `-method`   | HTTP method                          | GET     |
-| `-timeout`  | per-request timeout                  | 10s     |
-| `-H`        | request header, repeatable           |         |
-| `-json`     | write the summary to a JSON file     |         |
-| `-csv`      | write the summary to a CSV file      |         |
-
-Custom headers:
+| flag | meaning | default |
+| --- | --- | --- |
+| `-url` | target URL (required) | |
+| `-n` | total requests | 200 |
+| `-c` | concurrent workers, 1000 at most | 20 |
+| `-method` | HTTP method | GET |
+| `-timeout` | per-request timeout | 10s |
+| `-H` | header as `Key: Value`, repeatable | |
+| `-json`, `-csv` | write the summary to a file | |
 
 ```
-hitcheck load -url https://api.example.com/v1/ping \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json" \
-  -n 500 -c 25
+hitcheck load -url https://api.example.com/ping -H "Authorization: Bearer $TOKEN" -n 500 -c 25
 ```
 
-## Config file
+## Config
 
-See `config.example.yaml`. Durations are written as Go duration strings
-(`5s`, `500ms`, `2m`). `expect_status` lets you treat a non-200 response as
-healthy, which is useful for endpoints that are supposed to return 404 or 401.
+Copy `config.example.yaml` to `config.yaml` and list your endpoints. Durations are Go strings like `5s` or `500ms`. `expect_status` lets a non-200 count as healthy, for endpoints that should return 404 or 401.
 
 ## How it works
 
-- **check** runs one goroutine per endpoint and waits on a `sync.WaitGroup`,
-  so total time is roughly the slowest endpoint rather than the sum.
-- **load** uses a fixed worker pool. A feeder goroutine pushes jobs onto a
-  channel, the workers pull from it, and results come back on a second channel
-  that a single collector drains. The pool size caps concurrency so the target
-  is not hit with more in-flight requests than asked for.
-- Percentiles use the nearest-rank method over the sorted sample set.
+- `check` starts one goroutine per endpoint and waits on a `sync.WaitGroup`.
+- `load` uses a fixed worker pool. One goroutine feeds jobs into a channel, the workers read from it, and a single collector reads results from a second channel. The pool size is the cap on in-flight requests.
+- Percentiles use the nearest-rank method on the sorted samples.
+- The JSON export keeps raw nanoseconds (`*_ns` fields). The CSV export is in milliseconds.
 
-## Notes
+## Tests
 
-Latencies in the terminal are shown in milliseconds. The JSON export keeps raw
-nanosecond counts (the `*_ns` fields) so nothing is lost to rounding; the CSV
-export converts to milliseconds for spreadsheet friendliness.
+```
+go test ./...
+```
+
+Config parsing, the stats maths and the load runner have tests. The `check` command and the report formatting do not yet.
